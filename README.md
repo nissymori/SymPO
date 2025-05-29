@@ -38,4 +38,3 @@ HF_TOKEN=... python -m train.sample .cache/data/models/dpo/FINAL --gpu_count 2 -
 ```
 OPENAI_API_KEY=... python -m train.evaluate --input_file .cache/outputs/dpo/completions.json --task default --evaluator gpt-4o-mini
 ```
-# SymPO
