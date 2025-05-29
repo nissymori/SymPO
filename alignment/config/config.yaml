@@ -1,0 +1,86 @@
+# random seed
+seed: 1
+
+# name for this experiment in the local run directory and on wandb
+exp_name: ???
+
+# datasets should be specified as a list (e.g., ++datasets=[shp,hh])
+datasets: ???
+
+# debug mode (disables wandb, model checkpointing, etc.)
+debug: false
+
+# wandb configuration
+wandb:
+  enabled: true
+  entity: null
+  project: "sympo_experiments"
+
+# where trained models will be saved
+# use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 
+# relevant HF env variables are HF_HOME
+cache_dir: .cache/
+
+local_run_dir: ${cache_dir}/${exp_name}
+
+# whether to eval at the very beginning of training
+do_first_eval: true
+
+# prevent wandb from logging more than once per minimum_log_interval_secs
+minimum_log_interval_secs: 1.0
+
+# if true, save a checkpoint every eval_every steps, which can be set further below
+intermediate_checkpoints: false
+
+defaults:
+- _self_
+- model: ???
+- loss: ???
+
+# the trainer class to use (e.g. BasicTrainer, FSDPTrainer, TensorParallelTrainer); should be specfied by the loss config
+trainer: BasicTrainer
+
+
+## TRAINING SETTINGS
+
+# the learning rate
+lr: 5e-6
+
+# the number of epochs to train for; if null, must specify n_examples
+n_epochs: 1
+
+# the number of examples to train for; if null, must specify n_epochs
+n_examples: null
+
+# the number of examples to evaluate on (leave as null to evaluate on all of them)
+n_eval_examples: 256
+
+# evaluate and save model every eval_every steps
+eval_every: 1024
+
+# the optimizer to use; should be one of the options listed here: https://pytorch.org/docs/stable/optim.html
+optimizer: AdamW
+
+# number of linear warmup steps for the learning rate
+warmup_steps: 150
+
+# cache log probabilities of reference model
+cache_reference_logprobs: false
+
+# path to pickle file of previously cached log probabilities of reference model
+load_reference_logprobs: null
+
+
+## DATALOADER SETTINGS
+
+# what fraction of undesirable data should be kept
+# e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away
+# this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
+frac_unique_desirable: 1.0
+
+# what fraction of desirable data should be kept
+# this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
+frac_unique_undesirable: 1.0
+
+# Noise Ratio
+noise_ratio: 0.0  # we don't use this for SFT

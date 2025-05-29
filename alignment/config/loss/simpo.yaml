@@ -1,0 +1,11 @@
+# Simple Preference Optimization
+
+# the temperature parameter for SimPO; controls the saturation
+beta: 10.0
+
+# hyperparam for margin size
+gamma_beta_ratio: 0.3
+
+trainer: SimPOTrainer
+
+dataloader: PairedPreferenceDataLoader
