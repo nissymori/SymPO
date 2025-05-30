@@ -110,24 +110,13 @@ wandb.init(project=config.project, config=config.dict())
 model = train(
     model, optimizer, train_loarder, test_loader, torch.device("cuda"), config
 )
-(
-    noisy_label_acc,
-    noisy_label_acc_for_correct,
-    noisy_label_acc_for_incorrect,
-    true_label_acc,
-    final_reward_acc,
-    reward_diffs,
-    rewards,
-) = final_test(model, test_loader, torch.device("cuda"), config)
-wandb.log(
-    {
-        "final_true_label_acc": true_label_acc,
-        "final_noisy_label_acc": noisy_label_acc,
-        "final_noisy_label_acc_for_correct": noisy_label_acc_for_correct,
-        "final_noisy_label_acc_for_incorrect": noisy_label_acc_for_incorrect,
-        "final_reward_acc": final_reward_acc,
-    }
+metrics, reward_diffs, rewards = final_test(
+    model, test_loader, torch.device("cuda"), config
 )
+final_metrics = {}
+for key in metrics.keys():
+    final_metrics[f"final_{key}"] = metrics[key]
+wandb.log(final_metrics)
 
 reward_diff_data = []
 for idx, diff in enumerate(range(-9, 10)):
@@ -157,6 +146,7 @@ wandb.log(
         )
     }
 )
+
 if config.save_model:
     torch.save(model.state_dict(), "model.pth")
     wandb.save("model.pth")

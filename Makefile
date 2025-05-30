@@ -1,13 +1,11 @@
 format:
 	black .
 	isort .
-	mypy .
 
 
 check:
 	black .
 	isort .
-	mypy .
 
 
 clean:

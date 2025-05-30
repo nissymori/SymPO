@@ -86,34 +86,15 @@ def move_batch_to_device(
     return tuple(tensor.to(device) for tensor in batch)
 
 
-def make_logits(
-    model: nn.Module,
-    x_1: torch.Tensor,
-    x_2: torch.Tensor,
-    output_reward: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    img_11 = x_1[:, 0, :, :]
-    img_12 = x_1[:, 1, :, :]
-    img_21 = x_2[:, 0, :, :]
-    img_22 = x_2[:, 1, :, :]
-    r_11 = model(img_11.unsqueeze(1)).squeeze()
-    r_12 = model(img_12.unsqueeze(1)).squeeze()
-    r_21 = model(img_21.unsqueeze(1)).squeeze()
-    r_22 = model(img_22.unsqueeze(1)).squeeze()
-    logits1 = r_11 - r_12
-    logits2 = r_21 - r_22
-    if output_reward:
-        return logits1, logits2, r_11, r_12, r_21, r_22
-    else:
-        return logits1, logits2
-
-
 def sympo_loss(
     model: nn.Module,
     batch: Tuple[torch.Tensor, ...],
     device: torch.device,
     config: Dict[str, Any],
 ) -> torch.Tensor:
+    """
+    Use the noisy label as the target.
+    """
     loss_fn = make_loss_fn(config.loss_type, config)
     x, y, y_true, r_diff, _ = batch
     r_1 = model(x[:, 0, :, :].unsqueeze(1)).squeeze()
@@ -129,6 +110,9 @@ def pn_loss(
     device: torch.device,
     config: Dict[str, Any],
 ) -> torch.Tensor:
+    """
+    Use the original label as the target.
+    """
     loss_fn = make_loss_fn(config.loss_type, config)
     x, y, y_true, r_diff, _ = batch
     r_1 = model(x[:, 0, :, :].unsqueeze(1)).squeeze()
@@ -138,26 +122,7 @@ def pn_loss(
     return loss
 
 
-def nll_loss(
-    model: nn.Module,
-    batch: Tuple[torch.Tensor, ...],
-    device: torch.device,
-    config: Dict[str, Any],
-) -> torch.Tensor:
-    loss_fn = make_loss_fn(config.loss_type, config)
-    x, y, y_true, r_diff, _ = batch
-    r_1 = model(x[:, 0, :, :].unsqueeze(1)).squeeze()
-    r_2 = model(x[:, 1, :, :].unsqueeze(1)).squeeze()
-    logits = r_1 - r_2
-    original_loss = loss_fn(y, logits)
-    flipped_loss = loss_fn(1 - y, logits)
-    loss = (
-        original_loss * (1 - config.epsilon_n) + flipped_loss * config.epsilon_p
-    ) / (1 - config.epsilon_p - config.epsilon_n)
-    return loss
-
-
-def calc_accuracy(
+def calc_metrics(
     model: nn.Module,
     batch: Tuple[torch.Tensor, ...],
     device: torch.device,
@@ -210,19 +175,37 @@ def calc_accuracy(
         .sum()
         .item()
     )
-    return (
-        noisy_label_correct / len(y),
-        noisy_label_correct_for_correct / len(y[noisy_label_is_correct]),
-        noisy_label_correct_for_incorrect / len(y[noisy_label_is_incorrect]),
-        true_label_correct / len(y_true),
-        reward_correct / len(r_diff),
-        avg_reward_abs,
-        avg_reward_abs_correct,
-        avg_reward_abs_incorrect,
-        avg_logit_abs,
-        avg_logit_abs_correct,
-        avg_logit_abs_incorrect,
-    )
+    return {
+        "noisy_label_correct": noisy_label_correct / len(y),
+        "noisy_label_correct_for_correct": noisy_label_correct_for_correct
+        / len(y[noisy_label_is_correct]),
+        "noisy_label_correct_for_incorrect": noisy_label_correct_for_incorrect
+        / len(y[noisy_label_is_incorrect]),
+        "true_label_correct": true_label_correct / len(y_true),
+        "reward_correct": reward_correct / len(r_diff),
+        "avg_reward_abs": avg_reward_abs,
+        "avg_reward_abs_correct": avg_reward_abs_correct,
+        "avg_reward_abs_incorrect": avg_reward_abs_incorrect,
+        "avg_logit_abs": avg_logit_abs,
+        "avg_logit_abs_correct": avg_logit_abs_correct,
+        "avg_logit_abs_incorrect": avg_logit_abs_incorrect,
+    }
+
+
+def metrics_keys():
+    return [
+        "noisy_label_correct",
+        "noisy_label_correct_for_correct",
+        "noisy_label_correct_for_incorrect",
+        "true_label_correct",
+        "reward_correct",
+        "avg_reward_abs",
+        "avg_reward_abs_correct",
+        "avg_reward_abs_incorrect",
+        "avg_logit_abs",
+        "avg_logit_abs_correct",
+        "avg_logit_abs_incorrect",
+    ]
 
 
 def compute_gradient_norm(model: nn.Module) -> float:
@@ -244,127 +227,59 @@ def train(
     config: Dict[str, Any],
 ) -> nn.Module:
     model.to(device)
+    train_metrics = {key: 0.0 for key in metrics_keys()}
+    train_loss = 0.0
+    total = 0
     for epoch in range(config.num_epochs):
-        train_label_acc = 0
-        train_noisy_label_acc = 0
-        train_noisy_label_acc_for_correct = 0
-        train_noisy_label_acc_for_incorrect = 0
-        train_reward_acc = 0
-        train_loss = 0
-        train_avg_reward_abs = 0
-        train_avg_reward_abs_correct = 0
-        train_avg_reward_abs_incorrect = 0
-        train_avg_logit_abs = 0
-        train_avg_logit_abs_correct = 0
-        train_avg_logit_abs_incorrect = 0
-        train_gradient_norm = 0
-        total = 0
         for batch_idx, (batch) in enumerate(train_loader):
             model.train()
             batch = move_batch_to_device(batch, device)
             optimizer.zero_grad()
             if config.algo == "sympo":
                 loss = sympo_loss(model, batch, device, config)
-            elif config.algo == "nll":
-                loss = nll_loss(model, batch, device, config)
             elif config.algo == "pn":
                 loss = pn_loss(model, batch, device, config)
             else:
                 raise ValueError("Unknown algorithm.")
             loss.backward()
-            train_gradient_norm += compute_gradient_norm(model)
             optimizer.step()
-            (
-                noisy_label_acc,
-                noisy_label_acc_for_correct,
-                noisy_label_acc_for_incorrect,
-                label_acc,
-                reward_acc,
-                avg_reward_abs,
-                avg_reward_abs_correct,
-                avg_reward_abs_incorrect,
-                avg_logit_abs,
-                avg_logit_abs_correct,
-                avg_logit_abs_incorrect,
-            ) = calc_accuracy(model, batch, device, config)
-            train_label_acc += label_acc
-            train_noisy_label_acc += noisy_label_acc
-            train_noisy_label_acc_for_correct += noisy_label_acc_for_correct
-            train_noisy_label_acc_for_incorrect += noisy_label_acc_for_incorrect
-            train_reward_acc += reward_acc
-            train_avg_reward_abs += avg_reward_abs
-            train_avg_reward_abs_correct += avg_reward_abs_correct
-            train_avg_reward_abs_incorrect += avg_reward_abs_incorrect
-            train_avg_logit_abs += avg_logit_abs
-            train_avg_logit_abs_correct += avg_logit_abs_correct
-            train_avg_logit_abs_incorrect += avg_logit_abs_incorrect
+            metrics = calc_metrics(model, batch, device, config)
+            for key in metrics_keys():  # update train_metrics
+                train_metrics[key] += metrics[key]
             train_loss += loss.item()
             total += 1
-        train_label_acc /= total
-        train_noisy_label_acc /= total
-        train_noisy_label_acc_for_correct /= total
-        train_noisy_label_acc_for_incorrect /= total
-        train_reward_acc /= total
+        for key in metrics_keys():  # average train_metrics
+            train_metrics[key] /= total
         train_loss /= total
-        train_avg_reward_abs /= total
-        train_avg_reward_abs_correct /= total
-        train_avg_reward_abs_incorrect /= total
-        train_avg_logit_abs /= total
-        train_avg_logit_abs_correct /= total
-        train_avg_logit_abs_incorrect /= total
-        train_gradient_norm /= total
         if epoch % 10 == 0:
-            tsne(model, train_loader, device, config, epoch)
-            (
-                noisy_label_acc,
-                noisy_label_acc_for_correct,
-                noisy_label_acc_for_incorrect,
-                label_acc,
-                reward_acc,
-                avg_reward_abs,
-                avg_reward_abs_correct,
-                avg_reward_abs_incorrect,
-                avg_logit_abs,
-                avg_logit_abs_correct,
-                avg_logit_abs_incorrect,
-            ) = test(model, test_loader, device, config, epoch)
+            test_metrics = test(model, test_loader, device, config, epoch)
             print(
                 f"""
                 Epoch: {epoch}, \\
-                Train Label Acc: {train_label_acc * 100:.2f}, \\
-                Train Noisy Label Acc: {train_noisy_label_acc * 100:.2f}, \\
-                Train Noisy Label Acc for Correct: {train_noisy_label_acc_for_correct * 100:.2f}, \\
-                Train Noisy Label Acc for Incorrect: {train_noisy_label_acc_for_incorrect * 100:.2f}, \\
-                Test Label Accuracy: {label_acc * 100:.2f}, \\
-                Test Noisy Label Acc: {noisy_label_acc * 100:.2f}, \\
-                Test Reward Acc: {reward_acc * 100:.2f}, \\
-                avg_logit_abs: {avg_logit_abs:.2f}, \\
-                train_gradient_norm: {train_gradient_norm:.2f}
+                Train Label Acc: {train_metrics["noisy_label_correct"] * 100:.2f}, \\
+                Train Noisy Label Acc: {train_metrics["noisy_label_correct"] * 100:.2f}, \\
+                Train Noisy Label Acc for Correct: {train_metrics["noisy_label_correct_for_correct"] * 100:.2f}, \\
+                Train Noisy Label Acc for Incorrect: {train_metrics["noisy_label_correct_for_incorrect"] * 100:.2f}, \\
+                Test Label Accuracy: {test_metrics["noisy_label_correct"] * 100:.2f}, \\
+                Test Noisy Label Acc: {test_metrics["noisy_label_correct"] * 100:.2f}, \\
+                Test Reward Acc: {test_metrics["reward_correct"] * 100:.2f}, \\
+                avg_logit_abs: {test_metrics["avg_logit_abs"] * 100:.2f}, \\
+                train_loss: {train_loss:.2f}
                 """
             )
+            # train_のprefixを追加
+            log_train_metrics = {}
+            for key in train_metrics.keys():  # add train_ prefix
+                log_train_metrics[f"train_{key}"] = train_metrics[key]
+            log_test_metrics = {}
+            for key in test_metrics.keys():  # add test_ prefix
+                log_test_metrics[f"test_{key}"] = test_metrics[key]
             wandb.log(
-                {
+                log_train_metrics
+                | log_test_metrics
+                | {
                     "epoch": epoch,
-                    "train_label_acc": train_label_acc,
-                    "train_noisy_label_acc": train_noisy_label_acc,
-                    "train_avg_reward_abs": train_avg_reward_abs,
-                    "train_avg_reward_abs_correct": train_avg_reward_abs_correct,
-                    "train_avg_reward_abs_incorrect": train_avg_reward_abs_incorrect,
-                    "train_avg_logit_abs": train_avg_logit_abs,
-                    "train_avg_logit_abs_correct": train_avg_logit_abs_correct,
-                    "train_avg_logit_abs_incorrect": train_avg_logit_abs_incorrect,
-                    "test_label_acc": label_acc,
-                    "test_noisy_label_acc": noisy_label_acc,
-                    "test_noisy_label_acc_for_correct": noisy_label_acc_for_correct,
-                    "test_noisy_label_acc_for_incorrect": noisy_label_acc_for_incorrect,
-                    "test_reward_acc": reward_acc,
-                    "test_avg_reward_abs": avg_reward_abs,
-                    "test_avg_reward_abs_correct": avg_reward_abs_correct,
-                    "test_avg_reward_abs_incorrect": avg_reward_abs_incorrect,
-                    "test_avg_logit_abs": avg_logit_abs,
-                    "test_avg_logit_abs_correct": avg_logit_abs_correct,
-                    "test_avg_logit_abs_incorrect": avg_logit_abs_incorrect,
-                    "train_gradient_norm": train_gradient_norm,
+                    "train_loss": train_loss,
                 }
             )
     return model
@@ -378,66 +293,16 @@ def test(
     epoch: int,
 ) -> Tuple[float, float, float]:
     model.eval()
-    noisy_label_acc = 0
-    noisy_label_acc_for_correct = 0
-    noisy_label_acc_for_incorrect = 0
-    label_acc = 0
-    reward_acc = 0
-    avg_reward_abs = 0
-    avg_reward_abs_correct = 0
-    avg_reward_abs_incorrect = 0
-    avg_logit_abs = 0
-    avg_logit_abs_correct = 0
-    avg_logit_abs_incorrect = 0
+    test_metrics = {key: 0.0 for key in metrics_keys()}
     total = 0
     for batch in test_loader:
-        (
-            n_acc,
-            n_acc_for_correct,
-            n_acc_for_incorrect,
-            t_acc,
-            r_acc,
-            reward_abs,
-            reward_abs_correct,
-            reward_abs_incorrect,
-            logit_abs,
-            logit_abs_correct,
-            logit_abs_incorrect,
-        ) = calc_accuracy(model, batch, device, config)
-        noisy_label_acc += n_acc
-        noisy_label_acc_for_correct += n_acc_for_correct
-        noisy_label_acc_for_incorrect += n_acc_for_incorrect
-        label_acc += t_acc
-        reward_acc += r_acc
-        avg_reward_abs += reward_abs
-        avg_reward_abs_correct += reward_abs_correct
-        avg_reward_abs_incorrect += reward_abs_incorrect
-        avg_logit_abs += logit_abs
-        avg_logit_abs_correct += logit_abs_correct
-        avg_logit_abs_incorrect += logit_abs_incorrect
+        metrics = calc_metrics(model, batch, device, config)
+        for key in metrics_keys():  # update test_metrics
+            test_metrics[key] += metrics[key]
         total += 1
-    avg_reward_abs /= total
-    avg_reward_abs_correct /= total
-    avg_reward_abs_incorrect /= total
-    avg_logit_abs /= total
-    avg_logit_abs_correct /= total
-    avg_logit_abs_incorrect /= total
-    noisy_label_acc /= total
-    noisy_label_acc_for_correct /= total
-    noisy_label_acc_for_incorrect /= total
-    return (
-        noisy_label_acc / total,
-        noisy_label_acc_for_correct / total,
-        noisy_label_acc_for_incorrect / total,
-        label_acc / total,
-        reward_acc / total,
-        avg_reward_abs,
-        avg_reward_abs_correct,
-        avg_reward_abs_incorrect,
-        avg_logit_abs,
-        avg_logit_abs_correct,
-        avg_logit_abs_incorrect,
-    )
+    for key in metrics_keys():  # average test_metrics
+        test_metrics[key] /= total
+    return test_metrics
 
 
 def final_test(
@@ -448,41 +313,16 @@ def final_test(
 ) -> Tuple[float, float, float]:
     model.eval()
     with torch.no_grad():
-        noisy_label_acc = 0
-        noisy_label_acc_for_correct = 0
-        noisy_label_acc_for_incorrect = 0
-        true_label_acc = 0
-        reward_acc = 0
+        metrics = {key: 0.0 for key in metrics_keys()}
         reward_diffs = [[] for _ in range(19)]
         rewards = [[] for _ in range(19)]
         total = 0
         for batch in test_loader:
-            (
-                n_acc,
-                n_acc_for_correct,
-                n_acc_for_incorrect,
-                t_acc,
-                r_acc,
-                reward_abs,
-                reward_abs_correct,
-                reward_abs_incorrect,
-                logit_abs,
-                logit_abs_correct,
-                logit_abs_incorrect,
-            ) = calc_accuracy(model, batch, device, config)
-            noisy_label_acc += n_acc
-            noisy_label_acc_for_correct += n_acc_for_correct
-            noisy_label_acc_for_incorrect += n_acc_for_incorrect
-            true_label_acc += t_acc
-            reward_acc += r_acc
+            metrics = calc_metrics(model, batch, device, config)
+            for key in metrics_keys():  # update metrics
+                metrics[key] += metrics[key]
             total += 1
-            (
-                x,
-                y,
-                y_true,
-                reward_diff,
-                true_reward,
-            ) = move_batch_to_device(batch, device)
+            x, y, y_true, reward_diff, true_reward = move_batch_to_device(batch, device)
             r_1 = model(x[:, 0, :, :].unsqueeze(1)).squeeze()
             r_2 = model(x[:, 1, :, :].unsqueeze(1)).squeeze()
             logits = r_1 - r_2
@@ -496,113 +336,4 @@ def final_test(
                 )
                 rewards[idx1].append(r_1[i].item())
                 rewards[idx2].append(r_2[i].item())
-    return (
-        noisy_label_acc / total,
-        noisy_label_acc_for_correct / total,
-        noisy_label_acc_for_incorrect / total,
-        true_label_acc / total,
-        reward_acc / total,
-        reward_diffs,
-        rewards,
-    )
-
-
-def tsne(model, dataloader, device, config, epoch):
-    model.eval()
-    with torch.no_grad():
-        all_x = []
-        all_noised_Y = []
-        all_true_Y = []
-        all_Y_diff = []
-        all_true_rewards = []
-        idx = 0
-        # dataloーダーから各バッチのデータを抽出
-        for batch in dataloader:
-            x, noised_Y, true_Y, Y_diff, true_rewards = batch
-            x = x.to(device)
-            model = model.to(device)
-            # 各ペア画像でforwardし、出力の差分を算出
-            _, output_1 = model(x[:, 0, :, :].unsqueeze(1), visualize=True)
-            _, output_2 = model(x[:, 1, :, :].unsqueeze(1), visualize=True)
-            output = output_1.squeeze() - output_2.squeeze()
-
-            all_x.append(output)
-            all_noised_Y.append(noised_Y)
-            all_true_Y.append(true_Y)
-            all_Y_diff.append(Y_diff)
-            all_true_rewards.append(true_rewards)
-            idx += 1
-            if idx > 5:
-                break
-
-        # 各バッチのリストをテンソルとして連結
-        all_x = torch.cat(all_x, dim=0)
-        all_noised_Y = torch.cat(all_noised_Y, dim=0)
-        all_true_Y = torch.cat(all_true_Y, dim=0)
-        all_Y_diff = torch.cat(all_Y_diff, dim=0)
-        all_true_rewards = torch.cat(all_true_rewards, dim=0)
-
-        # 正解・不正解のマスクを作成（noised_Yとtrue_Yが一致するか否か）
-        correct_mask = all_noised_Y == all_true_Y
-        incorrect_mask = all_noised_Y != all_true_Y
-
-        # trueラベルがPositive（1）かNegative（0）のマスクを作成
-        positive_mask = all_true_Y == 1
-        negative_mask = all_true_Y == 0
-
-        # 各条件でインデックスを抽出
-        correct_positive_idx = (correct_mask & positive_mask).nonzero().squeeze()
-        correct_negative_idx = (correct_mask & negative_mask).nonzero().squeeze()
-        incorrect_positive_idx = (incorrect_mask & positive_mask).nonzero().squeeze()
-        incorrect_negative_idx = (incorrect_mask & negative_mask).nonzero().squeeze()
-
-        # TSNEで全データを2次元に圧縮
-        from sklearn.manifold import TSNE
-
-        tsne_obj = TSNE(n_components=2, random_state=42)
-        emb = tsne_obj.fit_transform(all_x.cpu().numpy())
-
-        import matplotlib.pyplot as plt
-
-        # 2つの図を左右に並べたsubplotとして表示
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
-        # 左側: 正解のデータをプロット (正: 青, 負: 赤)
-        ax1.scatter(
-            emb[correct_positive_idx, 0],
-            emb[correct_positive_idx, 1],
-            c="blue",
-            marker="o",
-            label="Correct Positive",
-        )
-        ax1.scatter(
-            emb[correct_negative_idx, 0],
-            emb[correct_negative_idx, 1],
-            c="red",
-            marker="o",
-            label="Correct Negative",
-        )
-        ax1.set_title("t-SNE: Correct Predictions (Epoch {})".format(epoch))
-        ax1.legend()
-
-        # 右側: 誤分類のデータをプロット (正: 青, 負: 赤)
-        ax2.scatter(
-            emb[incorrect_positive_idx, 0],
-            emb[incorrect_positive_idx, 1],
-            c="blue",
-            marker="o",
-            label="Incorrect Positive",
-        )
-        ax2.scatter(
-            emb[incorrect_negative_idx, 0],
-            emb[incorrect_negative_idx, 1],
-            c="red",
-            marker="o",
-            label="Incorrect Negative",
-        )
-        ax2.set_title("t-SNE: Incorrect Predictions (Epoch {})".format(epoch))
-        ax2.legend()
-
-        # 画像として保存（例：tsne_combined_epoch.png）
-        plt.savefig(f"fig/tsne_{config.loss_type}_{config.epsilon_p}_{epoch}.png")
-        plt.close()
+    return metrics, reward_diffs, rewards
