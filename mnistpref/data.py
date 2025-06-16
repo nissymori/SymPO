@@ -98,9 +98,6 @@ def make_paired_pref_data(
         if not allow_par and y_1 == y_2:
             continue
 
-        if np.abs(y_1 - y_2) > 2:
-            continue
-
         # Pair the data and compute the BT model probability
         g = (y_1 - y_2) * tempereture
         p = 1 / (1 + np.exp(-g))
