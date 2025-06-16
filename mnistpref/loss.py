@@ -131,50 +131,50 @@ def calc_metrics(
     model.eval()
     # Move batch to device
     batch = move_batch_to_device(batch, device)
-    model = model.to(device)
-    # Extract batch elements
-    x, y, y_true, r_diff, _ = batch
-    r_label = r_diff > 0
-    r_1 = model(x[:, 0, :, :].unsqueeze(1)).squeeze()
-    r_2 = model(x[:, 1, :, :].unsqueeze(1)).squeeze()
-    logits = r_1 - r_2
-    noisy_label_is_correct = y == y_true
-    noisy_label_is_incorrect = y != y_true
-    avg_reward_abs = (r_1.abs() + r_2.abs()) / 2
-    avg_logit_abs = logits.abs()
+    with torch.no_grad():
+        # Extract batch elements
+        x, y, y_true, r_diff, _ = batch
+        r_label = r_diff > 0
+        r_1 = model(x[:, 0, :, :].unsqueeze(1)).squeeze()
+        r_2 = model(x[:, 1, :, :].unsqueeze(1)).squeeze()
+        logits = r_1 - r_2
+        noisy_label_is_correct = y == y_true
+        noisy_label_is_incorrect = y != y_true
+        avg_reward_abs = (r_1.abs() + r_2.abs()) / 2
+        avg_logit_abs = logits.abs()
 
-    avg_reward_abs_correct = (
-        (r_1[noisy_label_is_correct].abs() + r_2[noisy_label_is_correct].abs()) / 2
-    ).mean()
-    avg_reward_abs_incorrect = (
-        (r_1[noisy_label_is_incorrect].abs() + r_2[noisy_label_is_incorrect].abs()) / 2
-    ).mean()
-    avg_logit_abs_correct = (logits[noisy_label_is_correct].abs()).mean()
-    avg_logit_abs_incorrect = (logits[noisy_label_is_incorrect].abs()).mean()
-    avg_reward_abs = avg_reward_abs.mean()
-    avg_logit_abs = avg_logit_abs.mean()
+        avg_reward_abs_correct = (
+            (r_1[noisy_label_is_correct].abs() + r_2[noisy_label_is_correct].abs()) / 2
+        ).mean()
+        avg_reward_abs_incorrect = (
+            (r_1[noisy_label_is_incorrect].abs() + r_2[noisy_label_is_incorrect].abs()) / 2
+        ).mean()
+        avg_logit_abs_correct = (logits[noisy_label_is_correct].abs()).mean()
+        avg_logit_abs_incorrect = (logits[noisy_label_is_incorrect].abs()).mean()
+        avg_reward_abs = avg_reward_abs.mean()
+        avg_logit_abs = avg_logit_abs.mean()
 
-    pred = logits > 0.0
-    noisy_label_correct = (pred.reshape(-1) == y.reshape(-1)).sum().item()
-    true_label_correct = (pred.reshape(-1) == y_true.reshape(-1)).sum().item()
-    reward_correct = (pred.reshape(-1) == r_label.reshape(-1)).sum().item()
+        pred = logits > 0.0
+        noisy_label_correct = (pred.reshape(-1) == y.reshape(-1)).sum().item()
+        true_label_correct = (pred.reshape(-1) == y_true.reshape(-1)).sum().item()
+        reward_correct = (pred.reshape(-1) == r_label.reshape(-1)).sum().item()
 
-    noisy_label_correct_for_correct = (
-        (
-            pred[noisy_label_is_correct].reshape(-1)
-            == y[noisy_label_is_correct].reshape(-1)
+        noisy_label_correct_for_correct = (
+            (
+                pred[noisy_label_is_correct].reshape(-1)
+                == y[noisy_label_is_correct].reshape(-1)
+            )
+            .sum()
+            .item()
         )
-        .sum()
-        .item()
-    )
-    noisy_label_correct_for_incorrect = (
-        (
-            pred[noisy_label_is_incorrect].reshape(-1)
-            == y[noisy_label_is_incorrect].reshape(-1)
+        noisy_label_correct_for_incorrect = (
+            (
+                pred[noisy_label_is_incorrect].reshape(-1)
+                == y[noisy_label_is_incorrect].reshape(-1)
+            )
+            .sum()
+            .item()
         )
-        .sum()
-        .item()
-    )
     return {
         "noisy_label_correct": noisy_label_correct / len(y),
         "noisy_label_correct_for_correct": noisy_label_correct_for_correct
