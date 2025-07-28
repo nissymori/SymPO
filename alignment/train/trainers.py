@@ -910,9 +910,11 @@ class RDPOTrainer(PairedPreferenceTrainer):
             policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1)
         )
         logits = chosen_rewards - rejected_rewards
-
-        rdpo_loss = (1 - self.config.noise_ratio) * F.logsigmoid(logits) - self.config.noise_ratio * F.logsigmoid(-logits)
-        rdpo_loss = rdpo_loss / (1 - 2 * self.config.noise_ratio)
+        # refer to https://github.com/huggingface/trl/blob/03034317d0be0c259c315f5ffad71be138c17d2c/trl/trainer/dpo_trainer.py#L1066
+        rdpo_loss = (
+                -F.logsigmoid(logits) * (1 - self.config.noise_ratio)
+                + F.logsigmoid(-logits) * self.config.noise_ratio
+            ) / (1 - 2 * self.config.noise_ratio)
         return rdpo_loss, chosen_rewards.detach(), rejected_rewards.detach()
 
 
