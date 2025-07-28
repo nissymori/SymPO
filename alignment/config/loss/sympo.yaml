@@ -1,7 +1,7 @@
 beta: 0.1
 loss_type: sigmoid
-clip: False
-clip_value: 20
+clip: True
+clip_value: 10
 
 trainer: SymPOTrainer
 

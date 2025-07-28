@@ -1,4 +1,5 @@
 alpha: 14
+beta: 0.1
 
 trainer: ROPOTrainer
 

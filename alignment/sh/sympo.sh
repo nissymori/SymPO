@@ -4,12 +4,11 @@ model=$3
 model_name=$4
 noise_ratio=$5
 loss_type=$6
-n_examples=$7
+batch_size=$7
 seed=$8
 
 # train
 WANDB_API_KEY=$wandb_key accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py \
-    n_examples=$n_examples \
     loss=sympo \
     noise_ratio=$noise_ratio \
     model=$model \
@@ -21,8 +20,8 @@ WANDB_API_KEY=$wandb_key accelerate launch --config_file accelerate_config/fsdp_
     ++lr=5e-6 \
     ++loss.beta=0.1 \
     ++loss.loss_type=$loss_type \
-    model.batch_size=32 \
-    model.eval_batch_size=32 \
+    model.batch_size=$batch_size \
+    model.eval_batch_size=$batch_size \
     model.max_length=512 \
     model.max_prompt_length=256 \
     ++model.load_from=.cache/data/$dataset/$model_name/sft/seed_$seed/FINAL
