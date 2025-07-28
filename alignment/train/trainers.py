@@ -911,8 +911,7 @@ class RDPOTrainer(PairedPreferenceTrainer):
         )
         logits = chosen_rewards - rejected_rewards
 
-        rdpo_loss = -(1 - self.config.noise_ratio) * F.logsigmoid(logits)
-        +self.config.noise_ratio * F.logsigmoid(-logits)
+        rdpo_loss = -(1 - self.config.noise_ratio) * F.logsigmoid(logits) + self.config.noise_ratio * F.logsigmoid(-logits)
         rdpo_loss = rdpo_loss / (1 - 2 * self.config.noise_ratio)
         return rdpo_loss, chosen_rewards.detach(), rejected_rewards.detach()
 
