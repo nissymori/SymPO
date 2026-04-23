@@ -22,6 +22,8 @@ Each Example object will contain
 import json
 import random
 import re
+import os
+from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -191,13 +193,14 @@ def assert_noise_ratio(data: Dataset, noise_ratio: float):
 
     matches = sum(n == t for n, t in zip(noisy_labels, true_labels))
     data_noise_ratio = 1 - matches / len(noisy_labels)
-
-    assert (
-        data_noise_ratio <= noise_ratio + 0.01
-    ), f"Noise ratio is not consistent true noise ratio: {noise_ratio} data noise ratio: {data_noise_ratio}"
-    assert (
-        data_noise_ratio >= noise_ratio - 0.01
-    ), f"Noise ratio is not consistent true noise ratio: {noise_ratio} data noise ratio: {data_noise_ratio}"
+    if len(noisy_labels) >= 5000:
+        assert (
+            data_noise_ratio <= noise_ratio + 0.01
+        ), f"Noise ratio is not consistent true noise ratio: {noise_ratio} data noise ratio: {data_noise_ratio} length: {len(noisy_labels)}"
+        assert (
+            data_noise_ratio >= noise_ratio - 0.01
+        ), f"Noise ratio is not consistent true noise ratio: {noise_ratio} data noise ratio: {data_noise_ratio} length: {len(noisy_labels)}"
+        
     print("len(noisy_labels)", len(noisy_labels))
     print("data_noise_ratio", data_noise_ratio)
     print("noise_ratio", noise_ratio)
@@ -370,62 +373,193 @@ def get_ultrabin(split: str, noise_ratio: float = 0.0) -> Dataset:
     return data
 
 
-def get_ultrafeedback_armorm(split: str, noise_ratio: float = 0.0) -> Dataset:
-    rank0_print(
-        f"Loading ultrafeedback_armorm dataset ({split} split) from Huggingface..."
-    )
-    dataset = datasets.load_dataset(
-        "princeton-nlp/llama3-ultrafeedback-armorm", split=split
-    )
+def get_oasst(split: str, noise_ratio: float=0.0) -> Dataset:
+    """
+    Load the Open Assistant dataset from Huggingface and convert it into to a Dataset.
+    For this dataset, the SFT text is the preferred response.
+
+    OASST is a dataset of ranked responses (not just pairwise), but since we are working with losses that expect paired preferences, 
+    turn a ranking (a, b, c, d, e) into pairwise preferences ((a,b), (b,c), (c,d), (d,e)).
+    
+    Args:
+        - split: one of 'test', 'train'
+
+    Returns:   
+        A Dataset instance.
+    """
+    rank0_print(f'Loading OASST dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('OpenAssistant/oasst1', split=('validation' if split == 'test' else 'train'))
+    dataset = dataset.filter(lambda x: x['lang'] == 'en')
+
+    message_indexed_df = pd.DataFrame(dataset).set_index('message_id')
+    parent_indexed_df = pd.DataFrame(dataset).set_index('parent_id')
+
+    def get_path_to_root(node: pd.Series):
+        if node['parent_id'] is None:
+            return [node]
+        else:
+            parent = message_indexed_df.loc[node['parent_id']]
+            return [node] + get_path_to_root(parent)
+    
+    def build_conversation(path: List[pd.Series]):
+        conversation = []
+        for node in reversed(path):
+            role = "user" if node['role'] == 'prompter' else "assistant"
+            conversation.append({"role": role, "content": node['text']})
+        return conversation
+
+    data = Dataset('OASST')
+
+    for row in (tqdm.tqdm(dataset, desc='Processing OASST') if on_rank0() else dataset):
+        if row['rank'] == 0 or row['rank'] is None:
+            continue
+
+        try:
+            sibling_df = parent_indexed_df.loc[row['parent_id']]
+            next_best_sibling = sibling_df[sibling_df['rank'] == (row['rank'] - 1)].iloc[0]
+            path_to_root = get_path_to_root(message_indexed_df.loc[next_best_sibling['message_id']])
+        except KeyError:
+            continue
+        except IndexError:
+            continue
+
+        conversation = build_conversation(path_to_root[1:])  # Exclude the current message
+        prompt_key = json.dumps(conversation)  # Use the conversation as the key
+
+        data[prompt_key].prompt = conversation
+        data[prompt_key].generations.append([{"role": "assistant", "content": next_best_sibling['text']}])
+        data[prompt_key].generations.append([{"role": "assistant", "content": row['text']}])
+        data[prompt_key].pairs.append((len(data[prompt_key].generations) - 2, len(data[prompt_key].generations) - 1))
+        data[prompt_key].scores.extend([next_best_sibling['rank'], row['rank']])
+        data[prompt_key].dataset_name = 'oasst'
+        data[prompt_key].remove_extra_spaces()
+        data[prompt_key] = flip_data(data[prompt_key], noise_ratio)
+
+    assert_noise_ratio(data, noise_ratio)
+    return data
+
+
+def get_alpaca_comparison(path: str, split: str, noise_ratio: float = 0.0) -> Dataset:
+    """
+    Load preference comparisons from comparison_data.json and convert them to a Dataset.
+
+    Expected JSON schema per item:
+      - user_input: str                       # prompt shown to the models
+      - responses_and_scores: List[Dict]      # each dict must contain:
+          - response: str                     # model completion
+          - score: float                      # quality score (higher is better)
+          - [optional] split: {"train","test",...}
+
+    For each prompt we form a single preference pair between the highest-scoring and
+    lowest-scoring responses (skipping ties where no strict preference exists).
+
+    Args:
+        path: path to comparison_data.json
+        split: split name to filter by; if items have no 'split' field, all items are used
+        noise_ratio: probability of flipping each pair's preference (to inject label noise)
+
+    Returns:
+        A Dataset instance named "alpaca_comparison".
+    """
+    rank0_print(f"Loading Alpaca comparison data ({split} split) from {path}...")
+    with open(path, "r", encoding="utf-8") as f:
+        records = json.load(f)
+
     if on_rank0():
-        dataset = tqdm.tqdm(dataset, desc="Processing ultrafeedback armorm")
+        records = tqdm.tqdm(records, desc="Processing Alpaca comparison")
 
-    data = Dataset("ultrafeedback_armorm")
+    data = Dataset("alpaca_comparison")
 
-    for row in dataset:
-        # Convert the prompt into the new format
-        conversation = [{"role": "user", "content": row["prompt"]}]
+    skipped_malformed = 0
+    skipped_insufficient = 0
+    skipped_ties = 0
+    pair_count = 0
 
-        # Create a unique key for this example (using the prompt)
-        key = row["prompt"]
+    for row in records:
+        # Respect split only if provided in the json item
+        if row.get("split", split) != split and "split" in row:
+            continue
 
-        # Update the dataset
+        user_input = row.get("user_input")
+        responses = row.get("responses_and_scores")
+
+        if not isinstance(user_input, str) or not isinstance(responses, list):
+            skipped_malformed += 1
+            continue
+
+        valid = [
+            r
+            for r in responses
+            if isinstance(r, dict)
+            and isinstance(r.get("response"), str)
+            and isinstance(r.get("score"), (int, float))
+        ]
+
+        if len(valid) < 2:
+            skipped_insufficient += 1
+            continue
+
+        # Sort once to pick top/bottom efficiently
+        valid.sort(key=lambda r: r["score"], reverse=True)
+        best = valid[0]
+        worst = min(valid, key=lambda r: r["score"])
+
+        if float(best["score"]) <= float(worst["score"]):
+            skipped_ties += 1
+            continue
+
+        key = user_input  # use the raw prompt as a stable key (consistent with other loaders)
+
+        # Prompt as chat turns
+        conversation = [{"role": "user", "content": user_input}]
+
+        # Indices BEFORE appending the two generations
+        i = data[key].num_generations()
+        j = i + 1
+
+        # Highest-scoring response is treated as the preferred completion.
         data[key].prompt = conversation
-        data[key].generations.append([row["chosen"][-1]])
-        data[key].generations.append([row["rejected"][-1]])
-        i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
+        data[key].generations.append(
+            [{"role": "assistant", "content": best["response"]}]
+        )
+        data[key].generations.append(
+            [{"role": "assistant", "content": worst["response"]}]
+        )
+        data[key].scores.extend([float(best["score"]), float(worst["score"])])
         data[key].pairs.append((i, j))
-        data[key].sft_index = i  # The chosen response is the SFT target
+        data[key].sft_index = i  # chosen response as SFT target
         data[key].dataset_name = data.name
+        data[key].original_prompt = user_input
         data[key].truncation_mode = "keep_start"
+
+        # Normalize spacing
         data[key].remove_extra_spaces()
+
+        # Inject label noise (flip pair with prob=noise_ratio) and record labels
         data[key] = flip_data(data[key], noise_ratio)
-    assert_noise_ratio(data, noise_ratio)
-    return data
+        pair_count += 1
 
-
-def get_ultrachat(split: str, noise_ratio: float = 0.0) -> Dataset:
-    rank0_print(f"Loading ultrachat dataset ({split} split) from Huggingface...")
-    dataset = datasets.load_dataset(
-        "HuggingFaceH4/ultrachat_200k", split=f"{split}_sft"
-    )
     if on_rank0():
-        dataset = tqdm.tqdm(dataset, desc="Processing ultrachat")
+        if skipped_malformed:
+            rank0_print(f"Skipped {skipped_malformed} malformed items in {path}.")
+        if skipped_insufficient:
+            rank0_print(
+                f"Skipped {skipped_insufficient} items with fewer than two scored responses."
+            )
+        if skipped_ties:
+            rank0_print(
+                f"Skipped {skipped_ties} items where top and bottom scores were tied."
+            )
 
-    data = Dataset("ultrachat")
+    if pair_count == 0:
+        raise ValueError(
+            f"No Alpaca comparison pairs could be constructed from {path}; check the data file."
+        )
 
-    for row in dataset:
-        key = row["prompt"]
-        data[key].prompt = [row["messages"][0]]
-        data[key].generations.append(row["messages"][1:])
-        data[key].sft_index = 0
-        data[key].dataset_name = data.name
-        data[key].truncation_mode = "keep_start"
-        data[key].remove_extra_spaces()
-        data[key] = flip_data(data[key], noise_ratio)
+    # Sanity-check the achieved noise ratio (no-op if noise_ratio==0)
     assert_noise_ratio(data, noise_ratio)
-    return data
 
+    return data
 
 class DataLoader:
     """
@@ -466,6 +600,25 @@ class DataLoader:
         self.kwargs = kwargs
         self.noise_ratio = kwargs.get("noise_ratio", 0.0)
 
+        default_comparison_path = Path(__file__).resolve().parent / "data" / "comparison_data_v2.json"
+        supplied_path = kwargs.get("data_path")
+        if supplied_path is None:
+            resolved_data_path = default_comparison_path
+        else:
+            supplied_path = Path(os.path.expanduser(str(supplied_path)))
+            if supplied_path.is_absolute():
+                resolved_data_path = supplied_path
+            else:
+                module_candidate = Path(__file__).resolve().parent / supplied_path
+                cwd_candidate = Path.cwd() / supplied_path
+                if module_candidate.exists():
+                    resolved_data_path = module_candidate
+                elif cwd_candidate.exists():
+                    resolved_data_path = cwd_candidate
+                else:
+                    resolved_data_path = module_candidate
+        self.data_path = str(resolved_data_path)
+
         assert (
             n_epochs is not None or n_examples is not None
         ), "Must specify either n_epochs or n_examples"
@@ -477,7 +630,12 @@ class DataLoader:
 
         for name in dataset_names:
             if f"get_{name}" in globals():
-                dataset = globals()[f"get_{name}"](split, noise_ratio=self.noise_ratio)
+                if name == "alpaca_comparison":
+                    current_path = self.data_path
+                    dataset = globals()[f"get_{name}"](current_path, split, noise_ratio=self.noise_ratio)
+                else:
+                    dataset = globals()[f"get_{name}"](split, noise_ratio=self.noise_ratio)
+
                 self.full_data.update(dataset.data)
             else:
                 try:

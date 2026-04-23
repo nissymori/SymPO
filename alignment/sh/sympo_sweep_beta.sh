@@ -7,7 +7,8 @@ loss_type=$6
 batch_size=$7
 clip=$8
 clip_value=$9
-seed=${10}
+beta=${10}
+seed=${11}
 
 echo "wandb_key: $wandb_key"
 echo "dataset: $dataset"
@@ -18,6 +19,7 @@ echo "loss_type: $loss_type"
 echo "batch_size: $batch_size"
 echo "clip: $clip"
 echo "clip_value: $clip_value"
+echo "beta: $beta"
 echo "seed: $seed"
 
 # train
@@ -26,12 +28,12 @@ WANDB_API_KEY=$wandb_key accelerate launch --config_file accelerate_config/fsdp_
     noise_ratio=$noise_ratio \
     model=$model \
     datasets=[$dataset] \
-    exp_name=sympo_$loss_type/clip_$clip/clip_value_$clip_value/noise_ratio_$noise_ratio/seed_$seed \
+    exp_name=sympo_$loss_type/clip_$clip/clip_value_$clip_value/beta_$beta/noise_ratio_$noise_ratio/seed_$seed \
     seed=$seed \
     ++cache_dir=.cache/data/$dataset/$model_name \
     ++model.name_or_path=$model_name \
     ++lr=5e-6 \
-    ++loss.beta=0.1 \
+    ++loss.beta=$beta \
     ++loss.loss_type=$loss_type \
     ++loss.clip=$clip \
     ++loss.clip_value=$clip_value \
@@ -43,9 +45,9 @@ WANDB_API_KEY=$wandb_key accelerate launch --config_file accelerate_config/fsdp_
 
 # sample
 python -m train.sample \
-    .cache/data/$dataset/$model_name/sympo_$loss_type/clip_$clip/clip_value_$clip_value/noise_ratio_$noise_ratio/seed_$seed/FINAL \
+    .cache/data/$dataset/$model_name/sympo_$loss_type/clip_$clip/clip_value_$clip_value/beta_$beta/noise_ratio_$noise_ratio/seed_$seed/FINAL \
     --gpu_count 2 \
-    --output_file .cache/outputs/$dataset/$model_name/sympo_$loss_type/clip_$clip/clip_value_$clip_value/noise_ratio_$noise_ratio/seed_$seed/completions.json \
+    --output_file .cache/outputs/$dataset/$model_name/sympo_$loss_type/clip_$clip/clip_value_$clip_value/beta_$beta/noise_ratio_$noise_ratio/seed_$seed/completions.json \
     --datasets $dataset \
     --mode custom_dataset \
     --max_tokens 512 \

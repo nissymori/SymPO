@@ -14,7 +14,7 @@ debug: false
 wandb:
   enabled: true
   entity: null
-  project: "sympo_experiments"
+  project: "sympo_for_report_full_dataset"
 
 # where trained models will be saved
 # use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 
