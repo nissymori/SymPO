@@ -1,4 +1,4 @@
-# On Symmetric Losses for Robust Policy Optimization with Noisy Preferences
+# On Symmetric Losses for Policy Optimization with Noisy Preferences
 This is the official code for the paper: On Symmetric Losses for Robust Policy Optimization with Noisy Preferences.
 
 ## Experiment with MNIST Preference Dataset
