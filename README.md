@@ -40,15 +40,14 @@ OPENAI_API_KEY=... python -m train.evaluate --input_file .cache/outputs/dpo/comp
 ```
 
 ## Cite us
-```
+```bibtex
 @article{
-nishimori2026on,
-title={On Symmetric Losses for Policy Optimization with Noisy Preferences},
-author={Soichiro Nishimori and Yu-Jie Zhang and Thanawat Lodkaew and Masashi Sugiyama},
-journal={Transactions on Machine Learning Research},
-issn={2835-8856},
-year={2026},
-url={https://openreview.net/forum?id=cBWGLmSeao},
-note={}
-}
+    nishimori2026on,
+    title={On Symmetric Losses for Policy Optimization with Noisy Preferences},
+    author={Soichiro Nishimori and Yu-Jie Zhang and Thanawat Lodkaew and Masashi Sugiyama},
+    journal={Transactions on Machine Learning Research},
+    issn={2835-8856},
+    year={2026},
+    url={https://openreview.net/forum?id=cBWGLmSeao},
+    }
 ```
